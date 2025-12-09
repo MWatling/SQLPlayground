@@ -105,7 +105,7 @@
         const { 
             Upload, Play, Trash2, Download, Database, Sparkles, RefreshCw, 
             Bug, Lightbulb, Settings, Table: TableIcon, Columns, ChevronRight, AlertCircle,
-            BookOpen, Copy, Check, Palette
+            BookOpen, Copy, Check, Palette, FolderOpen
         } = LucideIcons;
 
         // --- SQL Service ---
@@ -165,8 +165,11 @@
             return schema;
         };
 
-        const detectAndConvertBooleans = (db) => {
+        // Combines boolean normalization and Primary Key fixing
+        const normalizeDatabase = (db) => {
             const convertedColumns = [];
+            const fixedTables = [];
+
             try {
                 const tablesResult = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
                 if (!tablesResult.length || !tablesResult[0].values) return [];
@@ -177,12 +180,12 @@
                     const columnsResult = db.exec(`PRAGMA table_info("${table}")`);
                     if (!columnsResult.length || !columnsResult[0].values) continue;
 
-                    const columns = columnsResult[0].values.map(row => row[1]);
-
-                    for (const col of columns) {
-                        // Check for values that are NOT (null, 0, 1, 'true', 'false')
-                        // We use a query to check if there are any values that violate a boolean constraint
-                        const checkQuery = `
+                    const columnsData = columnsResult[0].values; // [cid, name, type, notnull, dflt_value, pk]
+                    const columnNames = columnsData.map(row => row[1]);
+                    
+                    // --- 1. Boolean Optimization ---
+                    for (const col of columnNames) {
+                         const checkQuery = `
                             SELECT 1 FROM "${table}" 
                             WHERE "${col}" IS NOT NULL 
                             AND "${col}" NOT LIKE 'true' 
@@ -194,32 +197,79 @@
                         
                         try {
                             const hasNonBoolean = db.exec(checkQuery).length > 0;
-
                             if (!hasNonBoolean) {
-                                // It seems like a boolean column. Check if it actually needs conversion (contains strings)
                                 const needsConversionQuery = `
                                     SELECT 1 FROM "${table}" 
                                     WHERE "${col}" LIKE 'true' OR "${col}" LIKE 'false' 
                                     LIMIT 1;
                                 `;
-                                const needsConversion = db.exec(needsConversionQuery).length > 0;
-
-                                if (needsConversion) {
-                                    // Convert 'true'/'false' strings to integer 1/0
+                                if (db.exec(needsConversionQuery).length > 0) {
                                     db.run(`UPDATE "${table}" SET "${col}" = 1 WHERE "${col}" LIKE 'true';`);
                                     db.run(`UPDATE "${table}" SET "${col}" = 0 WHERE "${col}" LIKE 'false';`);
                                     convertedColumns.push(`${table}.${col}`);
                                 }
                             }
                         } catch (err) {
-                            console.warn(`Skipping boolean check for ${table}.${col}`, err);
+                           // Ignore errors for blobs etc
+                        }
+                    }
+
+                    // --- 2. Auto-Increment Primary Key Fix ---
+                    // Look for integer columns that look like IDs but are NOT Primary Keys
+                    const hasPK = columnsData.some(c => c[5] > 0);
+                    if (!hasPK) {
+                        const idCol = columnsData.find(c => {
+                            const name = c[1].toUpperCase();
+                            const type = c[2].toUpperCase();
+                            return (name === 'ID' || name === `${table.toUpperCase()}ID`) && 
+                                   (type === 'INTEGER' || type === 'INT');
+                        });
+
+                        if (idCol) {
+                            // Check uniqueness to ensure it CAN be a PK
+                            try {
+                                const count = db.exec(`SELECT COUNT(*) FROM "${table}"`)[0].values[0][0];
+                                const distinct = db.exec(`SELECT COUNT(DISTINCT "${idCol[1]}") FROM "${table}"`)[0].values[0][0];
+                                
+                                if (count === distinct && count > 0) {
+                                    // Found a candidate! We need to recreate the table with PRIMARY KEY
+                                    const sqlResult = db.exec(`SELECT sql FROM sqlite_master WHERE name="${table}"`);
+                                    if (sqlResult.length > 0) {
+                                        let createSql = sqlResult[0].values[0][0];
+                                        const colName = idCol[1];
+                                        // Regex to inject PRIMARY KEY into the definition of the ID column
+                                        const regex = new RegExp(`(["\\[]?${colName}["\\]]?)\\s+(${idCol[2]})`, 'i');
+                                        
+                                        if (regex.test(createSql)) {
+                                            const tempTable = `${table}_new`;
+                                            // Replace "ID INTEGER" with "ID INTEGER PRIMARY KEY"
+                                            // And change table name in Create statement
+                                            let newSql = createSql.replace(regex, `$1 INTEGER PRIMARY KEY`)
+                                                                  .replace(/CREATE\s+TABLE\s+(["\\[]?\w+["\\]]?)/i, `CREATE TABLE "${tempTable}"`);
+                                            
+                                            db.run("BEGIN TRANSACTION");
+                                            db.run(newSql);
+                                            db.run(`INSERT INTO "${tempTable}" SELECT * FROM "${table}"`);
+                                            db.run(`DROP TABLE "${table}"`);
+                                            db.run(`ALTER TABLE "${tempTable}" RENAME TO "${table}"`);
+                                            db.run("COMMIT");
+                                            
+                                            fixedTables.push(table);
+                                        }
+                                    }
+                                }
+                            } catch (err) {
+                                console.warn(`Failed to fix PK for ${table}`, err);
+                                try { db.run("ROLLBACK"); } catch(e){}
+                            }
                         }
                     }
                 }
             } catch (e) {
-                console.error("Error normalizing booleans", e);
+                console.error("Error normalizing database", e);
             }
-            return convertedColumns;
+            
+            return { convertedColumns, fixedTables };
         };
 
         // --- Themes ---
@@ -494,13 +544,70 @@
             );
         };
 
+        // --- Component: ExampleSelector ---
+        const ExampleSelector = ({ onLoadExample }) => {
+            const [isOpen, setIsOpen] = useState(false);
+            const [examples, setExamples] = useState([]);
+            const dropdownRef = useRef(null);
+
+            useEffect(() => {
+                const handleClickOutside = (event) => {
+                    if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+                        setIsOpen(false);
+                    }
+                };
+                document.addEventListener('mousedown', handleClickOutside);
+                // Fetch available examples
+                fetch('examples/manifest.json')
+                    .then(res => res.json())
+                    .then(data => setExamples(data.examples || []))
+                    .catch(err => console.log('No examples found or manifest missing'));
+                    
+                return () => document.removeEventListener('mousedown', handleClickOutside);
+            }, []);
+
+            if (examples.length === 0) return null;
+
+            return (
+                <div className="relative" ref={dropdownRef}>
+                     <button
+                        onClick={() => setIsOpen(!isOpen)}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-md transition-colors border border-slate-200"
+                        title="Load Example Database"
+                    >
+                        {FolderOpen && <FolderOpen className="w-4 h-4 text-[var(--theme-accent)]" />}
+                        <span className="hidden sm:inline">Examples</span>
+                    </button>
+
+                    {isOpen && (
+                        <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-lg border border-slate-200 z-50 overflow-hidden py-1 animate-in fade-in zoom-in-95 duration-200">
+                            {examples.map(ex => (
+                                <button
+                                    key={ex.file}
+                                    onClick={() => {
+                                        onLoadExample(ex);
+                                        setIsOpen(false);
+                                    }}
+                                    className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 transition-colors"
+                                >
+                                    <div className="font-medium text-slate-800">{ex.name}</div>
+                                    <div className="text-xs text-slate-500 mt-0.5">{ex.description}</div>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
         // --- Component: SqlPlayground ---
         const SQL_KEYWORDS = [
             'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER',
             'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON', 'AS', 'DISTINCT', 'COUNT', 'SUM',
             'AVG', 'MAX', 'MIN', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET', 'AND', 'OR',
             'NOT', 'IN', 'IS', 'NULL', 'LIKE', 'BETWEEN', 'EXISTS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-            'VALUES', 'SET', 'INTO', 'TABLE', 'INDEX', 'VIEW', 'UNION', 'ALL', 'ANY', 'SOME', 'TRUE', 'FALSE', 'ASC', 'DESC'
+            'VALUES', 'SET', 'INTO', 'TABLE', 'INDEX', 'VIEW', 'UNION', 'ALL', 'ANY', 'SOME', 'TRUE', 'FALSE', 'ASC', 'DESC',
+            'AUTOINCREMENT'
         ];
 
         const getCaretCoordinates = (element, position) => {
@@ -571,45 +678,74 @@
                 return Array.from(new Set([...SQL_KEYWORDS, ...tableNames, ...columnNames]));
             }, [schema]);
 
+            const loadDatabase = useCallback((uInt8Array, name) => {
+                 try {
+                    const newDb = createDatabase(uInt8Array);
+                    
+                    // Run normalizations: Booleans and PK fixing
+                    const { convertedColumns, fixedTables } = normalizeDatabase(newDb);
+                    
+                    let note = [];
+                    if (convertedColumns.length > 0) note.push(`Optimized ${convertedColumns.length} boolean cols`);
+                    if (fixedTables.length > 0) note.push(`Fixed ${fixedTables.length} primary keys`);
+                    
+                    if (note.length > 0) {
+                        setNotification(note.join('. ') + ".");
+                        setTimeout(() => setNotification(null), 5000);
+                    }
+
+                    setDb(newDb);
+                    setFileName(name);
+                    
+                    const newSchema = getDatabaseSchema(newDb);
+                    setSchema(newSchema);
+                    setResult(null);
+                    setQuery('');
+                    
+                    if (newSchema.length > 0) {
+                        setQuery(`SELECT * FROM ${newSchema[0].tableName} LIMIT 10;`);
+                    }
+                    setError(null);
+                } catch (e) {
+                    setError(`Failed to load database: ${e.message}`);
+                    setDb(null);
+                } finally {
+                    setIsLoading(false);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                }
+            }, []);
+
             const handleFileUpload = useCallback(async (event) => {
                 const file = event.target.files?.[0];
                 if (!file) return;
 
                 setIsLoading(true);
-                setError(null);
                 setNotification(null);
-                setFileName(file.name);
-
+                
                 try {
-                const arrayBuffer = await file.arrayBuffer();
-                const uInt8Array = new Uint8Array(arrayBuffer);
-                const newDb = createDatabase(uInt8Array);
-
-                // Attempt to convert "TRUE"/"FALSE" text columns to integers to allow standard boolean syntax
-                const convertedCols = detectAndConvertBooleans(newDb);
-                if (convertedCols.length > 0) {
-                    setNotification(`Optimized ${convertedCols.length} columns to support native boolean syntax.`);
-                    setTimeout(() => setNotification(null), 5000);
-                }
-
-                setDb(newDb);
-                
-                const newSchema = getDatabaseSchema(newDb);
-                setSchema(newSchema);
-                setResult(null);
-                setQuery('');
-                
-                if (newSchema.length > 0) {
-                    setQuery(`SELECT * FROM ${newSchema[0].tableName} LIMIT 10;`);
-                }
+                    const arrayBuffer = await file.arrayBuffer();
+                    const uInt8Array = new Uint8Array(arrayBuffer);
+                    loadDatabase(uInt8Array, file.name);
                 } catch (e) {
-                setError(`Failed to load database: ${e.message}`);
-                setDb(null);
-                } finally {
-                setIsLoading(false);
-                if (fileInputRef.current) fileInputRef.current.value = '';
+                    setError(`Failed to read file: ${e.message}`);
+                    setIsLoading(false);
                 }
-            }, []);
+            }, [loadDatabase]);
+
+            const handleLoadExample = useCallback(async (example) => {
+                setIsLoading(true);
+                setNotification(null);
+                try {
+                    const response = await fetch(`examples/${example.file}`);
+                    if (!response.ok) throw new Error("Failed to fetch example file");
+                    const arrayBuffer = await response.arrayBuffer();
+                    const uInt8Array = new Uint8Array(arrayBuffer);
+                    loadDatabase(uInt8Array, example.name);
+                } catch (e) {
+                    setError(`Could not load example: ${e.message}`);
+                    setIsLoading(false);
+                }
+            }, [loadDatabase]);
 
             const handleRunQuery = useCallback(() => {
                 if (!db || !query.trim()) return;
@@ -815,6 +951,8 @@
                         onChange={handleFileUpload}
                       />
                       
+                      <ExampleSelector onLoadExample={handleLoadExample} />
+
                       <ThemeSelector currentTheme={theme} onSelectTheme={setTheme} />
                       
                       {isLoading ? (
