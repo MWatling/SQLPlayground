@@ -35,9 +35,10 @@
     <style>
       body {
         font-family: 'Inter', sans-serif;
-        background-color: #f8fafc;
+        background-color: var(--theme-bg, #f8fafc);
         height: 100vh;
         overflow: hidden;
+        transition: background-color 0.3s ease;
       }
       /* Custom scrollbar for better aesthetics */
       ::-webkit-scrollbar {
@@ -104,7 +105,7 @@
         const { 
             Upload, Play, Trash2, Download, Database, Sparkles, RefreshCw, 
             Bug, Lightbulb, Settings, Table: TableIcon, Columns, ChevronRight, AlertCircle,
-            BookOpen, Copy, Check 
+            BookOpen, Copy, Check, Palette
         } = LucideIcons;
 
         // --- SQL Service ---
@@ -221,6 +222,15 @@
             return convertedColumns;
         };
 
+        // --- Themes ---
+        const THEMES = [
+            { id: 'slate', name: 'Classic Slate', primary: '#0f172a', accent: '#d97706', accentLight: '#ffedd5', bg: '#f8fafc' },
+            { id: 'ocean', name: 'Ocean Blue', primary: '#0c4a6e', accent: '#0ea5e9', accentLight: '#e0f2fe', bg: '#f0f9ff' },
+            { id: 'forest', name: 'Forest Green', primary: '#14532d', accent: '#16a34a', accentLight: '#dcfce7', bg: '#f0fdf4' },
+            { id: 'royal', name: 'Royal Purple', primary: '#581c87', accent: '#9333ea', accentLight: '#f3e8ff', bg: '#faf5ff' },
+            { id: 'crimson', name: 'Crimson Red', primary: '#7f1d1d', accent: '#dc2626', accentLight: '#fee2e2', bg: '#fef2f2' },
+        ];
+
         // --- Cheat Sheet Data ---
         const CHEAT_SHEET_DATA = [
             { label: 'Select All', code: 'SELECT * FROM table;' },
@@ -250,7 +260,7 @@
                 <div className="flex flex-col h-full bg-white">
                     <div className="p-4 border-b border-slate-200 bg-slate-50 sticky top-0">
                         <h3 className="font-semibold text-slate-800 flex items-center gap-2">
-                            {BookOpen && <BookOpen className="w-4 h-4 text-[#d97706]" />}
+                            {BookOpen && <BookOpen className="w-4 h-4 text-[var(--theme-accent)]" />}
                             Cheat Sheet
                         </h3>
                     </div>
@@ -266,7 +276,7 @@
                                     <span className="text-xs font-medium text-slate-600">{item.label}</span>
                                     <button
                                         onClick={(e) => handleCopy(e, item.code, idx)}
-                                        className="text-slate-400 hover:text-[#d97706] transition-colors p-1 hover:bg-slate-200 rounded"
+                                        className="text-slate-400 hover:text-[var(--theme-accent)] transition-colors p-1 hover:bg-slate-200 rounded"
                                         title="Copy to clipboard"
                                     >
                                         {copiedIndex === idx ? (Check && <Check className="w-3 h-3 text-green-500" />) : (Copy && <Copy className="w-3 h-3" />)}
@@ -297,7 +307,7 @@
                 <div className="h-full overflow-y-auto">
                     <div className="p-4 border-b border-slate-200 bg-slate-50 sticky top-0">
                         <h3 className="font-semibold text-slate-800 flex items-center gap-2">
-                            {Database && <Database className="w-4 h-4 text-[#d97706]" />}
+                            {Database && <Database className="w-4 h-4 text-[var(--theme-accent)]" />}
                             Database Schema
                         </h3>
                         <p className="text-xs text-slate-500 mt-1">{schema.length} tables found</p>
@@ -432,13 +442,65 @@
             );
         };
 
+        // --- Component: ThemeSelector ---
+        const ThemeSelector = ({ currentTheme, onSelectTheme }) => {
+            const [isOpen, setIsOpen] = useState(false);
+            const dropdownRef = useRef(null);
+
+            useEffect(() => {
+                const handleClickOutside = (event) => {
+                    if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+                        setIsOpen(false);
+                    }
+                };
+                document.addEventListener('mousedown', handleClickOutside);
+                return () => document.removeEventListener('mousedown', handleClickOutside);
+            }, []);
+
+            return (
+                <div className="relative" ref={dropdownRef}>
+                    <button
+                        onClick={() => setIsOpen(!isOpen)}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-md transition-colors border border-slate-200"
+                        title="Change Theme"
+                    >
+                        {Palette && <Palette className="w-4 h-4 text-[var(--theme-accent)]" />}
+                        <span className="hidden sm:inline">Theme</span>
+                    </button>
+
+                    {isOpen && (
+                        <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-slate-200 z-50 overflow-hidden py-1 animate-in fade-in zoom-in-95 duration-200">
+                            {THEMES.map(theme => (
+                                <button
+                                    key={theme.id}
+                                    onClick={() => {
+                                        onSelectTheme(theme);
+                                        setIsOpen(false);
+                                    }}
+                                    className="w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-slate-50 transition-colors"
+                                >
+                                    <div className="flex gap-1">
+                                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: theme.primary }}></div>
+                                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: theme.accent }}></div>
+                                    </div>
+                                    <span className={`${currentTheme.id === theme.id ? 'font-semibold text-slate-900' : 'text-slate-600'}`}>
+                                        {theme.name}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
         // --- Component: SqlPlayground ---
         const SQL_KEYWORDS = [
             'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER',
             'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON', 'AS', 'DISTINCT', 'COUNT', 'SUM',
             'AVG', 'MAX', 'MIN', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET', 'AND', 'OR',
             'NOT', 'IN', 'IS', 'NULL', 'LIKE', 'BETWEEN', 'EXISTS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-            'VALUES', 'SET', 'INTO', 'TABLE', 'INDEX', 'VIEW', 'UNION', 'ALL', 'ANY', 'SOME', 'TRUE', 'FALSE'
+            'VALUES', 'SET', 'INTO', 'TABLE', 'INDEX', 'VIEW', 'UNION', 'ALL', 'ANY', 'SOME', 'TRUE', 'FALSE', 'ASC', 'DESC'
         ];
 
         const getCaretCoordinates = (element, position) => {
@@ -475,7 +537,7 @@
             return coordinates;
         };
 
-        const SqlPlayground = () => {
+        const SqlPlayground = ({ theme, setTheme }) => {
              const [db, setDb] = useState(null);
              const [isReady, setIsReady] = useState(false);
              const [schema, setSchema] = useState([]);
@@ -711,7 +773,7 @@
             if (!isReady) {
                 return (
                 <div className="flex items-center justify-center h-full">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#d97706]"></div>
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--theme-accent)]"></div>
                     <span className="ml-4 text-slate-600">Initializing SQL Engine...</span>
                 </div>
                 );
@@ -730,8 +792,8 @@
                   {/* Header Bar */}
                   <div className="flex items-center justify-between bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex-shrink-0 gap-4">
                     <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg ${db ? 'bg-[#e0f2fe]' : 'bg-slate-100'}`}>
-                        {Database && <Database className={`w-5 h-5 ${db ? 'text-[#0369a1]' : 'text-slate-400'}`} />}
+                      <div className="p-2 rounded-lg transition-colors duration-300" style={{ backgroundColor: db ? theme.accentLight : '#f1f5f9' }}>
+                        {Database && <Database className="w-5 h-5 transition-colors duration-300" style={{ color: db ? theme.primary : '#94a3b8' }} />}
                       </div>
                       <div>
                         <h2 className="font-bold text-slate-800">{fileName || "No Database Loaded"}</h2>
@@ -753,6 +815,8 @@
                         onChange={handleFileUpload}
                       />
                       
+                      <ThemeSelector currentTheme={theme} onSelectTheme={setTheme} />
+                      
                       {isLoading ? (
                         <div className="px-4 py-2 flex items-center gap-2 text-slate-500 text-sm">
                           {RefreshCw && <RefreshCw className="w-4 h-4 animate-spin" />}
@@ -761,7 +825,8 @@
                       ) : !db ? (
                          <button 
                            onClick={() => fileInputRef.current?.click()}
-                           className="flex items-center gap-2 bg-[#0f172a] hover:bg-[#1e293b] text-white px-4 py-2 rounded-md font-medium text-sm transition-all shadow-sm"
+                           className="flex items-center gap-2 text-white px-4 py-2 rounded-md font-medium text-sm transition-all shadow-sm hover:opacity-90"
+                           style={{ backgroundColor: theme.primary }}
                          >
                            {Upload && <Upload className="w-4 h-4" />}
                            Upload Database
@@ -856,11 +921,12 @@
                              onChange={handleQueryChange}
                              onKeyDown={handleKeyDown}
                              onScroll={handleScroll}
-                             className="absolute inset-0 w-full h-full p-4 font-mono text-sm bg-transparent text-transparent caret-slate-900 resize-none focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#d97706]/20 placeholder:text-slate-400 whitespace-pre !leading-normal"
+                             className="absolute inset-0 w-full h-full p-4 font-mono text-sm bg-transparent text-transparent caret-slate-900 resize-none focus:outline-none focus:ring-2 focus:ring-inset placeholder:text-slate-400 whitespace-pre !leading-normal transition-colors"
                              placeholder={db ? "SELECT * FROM table_name..." : "Upload a database to start writing queries..."}
                              style={{ 
                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                               tabSize: 2 
+                               tabSize: 2,
+                               '--tw-ring-color': `${theme.accent}33` // 20% opacity of accent
                              }}
                              spellCheck={false}
                              disabled={!db}
@@ -871,7 +937,8 @@
                            <button
                              onClick={handleRunQuery}
                              disabled={!query.trim() || !db}
-                             className="flex items-center gap-2 bg-[#0f172a] hover:bg-[#1e293b] disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-md font-medium text-sm transition-all shadow-sm active:scale-95"
+                             className="flex items-center gap-2 text-white px-6 py-2 rounded-md font-medium text-sm transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
+                             style={{ backgroundColor: theme.primary }}
                            >
                              {Play && <Play className="w-4 h-4 fill-current" />}
                              Run Query
@@ -911,10 +978,21 @@
         };
 
         const App = () => {
+            const [currentTheme, setCurrentTheme] = useState(THEMES[0]);
+
             return (
-                <div className="h-screen bg-[#f8fafc] text-slate-900 font-sans flex flex-col overflow-hidden">
+                <div 
+                    className="h-screen font-sans flex flex-col overflow-hidden transition-colors duration-300"
+                    style={{ 
+                        backgroundColor: currentTheme.bg,
+                        color: '#0f172a',
+                        '--theme-primary': currentTheme.primary,
+                        '--theme-accent': currentTheme.accent,
+                        '--theme-bg': currentTheme.bg
+                    }}
+                >
                     <main className="flex-1 w-full max-w-7xl mx-auto p-4 md:p-6 lg:p-8 flex flex-col overflow-hidden">
-                        <SqlPlayground />
+                        <SqlPlayground theme={currentTheme} setTheme={setCurrentTheme} />
                     </main>
                 </div>
             );
