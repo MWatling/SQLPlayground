@@ -164,6 +164,63 @@
             return schema;
         };
 
+        const detectAndConvertBooleans = (db) => {
+            const convertedColumns = [];
+            try {
+                const tablesResult = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+                if (!tablesResult.length || !tablesResult[0].values) return [];
+
+                const tables = tablesResult[0].values.flat();
+
+                for (const table of tables) {
+                    const columnsResult = db.exec(`PRAGMA table_info("${table}")`);
+                    if (!columnsResult.length || !columnsResult[0].values) continue;
+
+                    const columns = columnsResult[0].values.map(row => row[1]);
+
+                    for (const col of columns) {
+                        // Check for values that are NOT (null, 0, 1, 'true', 'false')
+                        // We use a query to check if there are any values that violate a boolean constraint
+                        const checkQuery = `
+                            SELECT 1 FROM "${table}" 
+                            WHERE "${col}" IS NOT NULL 
+                            AND "${col}" NOT LIKE 'true' 
+                            AND "${col}" NOT LIKE 'false' 
+                            AND "${col}" <> 0 
+                            AND "${col}" <> 1
+                            LIMIT 1;
+                        `;
+                        
+                        try {
+                            const hasNonBoolean = db.exec(checkQuery).length > 0;
+
+                            if (!hasNonBoolean) {
+                                // It seems like a boolean column. Check if it actually needs conversion (contains strings)
+                                const needsConversionQuery = `
+                                    SELECT 1 FROM "${table}" 
+                                    WHERE "${col}" LIKE 'true' OR "${col}" LIKE 'false' 
+                                    LIMIT 1;
+                                `;
+                                const needsConversion = db.exec(needsConversionQuery).length > 0;
+
+                                if (needsConversion) {
+                                    // Convert 'true'/'false' strings to integer 1/0
+                                    db.run(`UPDATE "${table}" SET "${col}" = 1 WHERE "${col}" LIKE 'true';`);
+                                    db.run(`UPDATE "${table}" SET "${col}" = 0 WHERE "${col}" LIKE 'false';`);
+                                    convertedColumns.push(`${table}.${col}`);
+                                }
+                            }
+                        } catch (err) {
+                            console.warn(`Skipping boolean check for ${table}.${col}`, err);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Error normalizing booleans", e);
+            }
+            return convertedColumns;
+        };
+
         // --- Cheat Sheet Data ---
         const CHEAT_SHEET_DATA = [
             { label: 'Select All', code: 'SELECT * FROM table;' },
@@ -351,13 +408,37 @@
             );
         };
 
+        // --- Component: Clock ---
+        const Clock = () => {
+            const [time, setTime] = useState(new Date());
+
+            useEffect(() => {
+                const interval = setInterval(() => setTime(new Date()), 1000);
+                return () => clearInterval(interval);
+            }, []);
+
+            const format = (n) => n.toString().padStart(2, '0');
+
+            return (
+                <div className="hidden md:flex items-center gap-3 bg-slate-50 px-5 py-2 rounded-full border border-slate-200 shadow-sm mx-4">
+                    <div className="relative flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                    </div>
+                    <span className="font-mono text-xl font-bold tracking-widest text-slate-700 tabular-nums">
+                        {format(time.getHours())}:{format(time.getMinutes())}:{format(time.getSeconds())}
+                    </span>
+                </div>
+            );
+        };
+
         // --- Component: SqlPlayground ---
         const SQL_KEYWORDS = [
             'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER',
             'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON', 'AS', 'DISTINCT', 'COUNT', 'SUM',
             'AVG', 'MAX', 'MIN', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET', 'AND', 'OR',
             'NOT', 'IN', 'IS', 'NULL', 'LIKE', 'BETWEEN', 'EXISTS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-            'VALUES', 'SET', 'INTO', 'TABLE', 'INDEX', 'VIEW', 'UNION', 'ALL', 'ANY', 'SOME'
+            'VALUES', 'SET', 'INTO', 'TABLE', 'INDEX', 'VIEW', 'UNION', 'ALL', 'ANY', 'SOME', 'TRUE', 'FALSE'
         ];
 
         const getCaretCoordinates = (element, position) => {
@@ -404,6 +485,7 @@
              const [isLoading, setIsLoading] = useState(false);
              const [fileName, setFileName] = useState(null);
              const [executionTime, setExecutionTime] = useState(undefined);
+             const [notification, setNotification] = useState(null);
              const [suggestions, setSuggestions] = useState([]);
              const [showSuggestions, setShowSuggestions] = useState(false);
              const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
@@ -433,12 +515,21 @@
 
                 setIsLoading(true);
                 setError(null);
+                setNotification(null);
                 setFileName(file.name);
 
                 try {
                 const arrayBuffer = await file.arrayBuffer();
                 const uInt8Array = new Uint8Array(arrayBuffer);
                 const newDb = createDatabase(uInt8Array);
+
+                // Attempt to convert "TRUE"/"FALSE" text columns to integers to allow standard boolean syntax
+                const convertedCols = detectAndConvertBooleans(newDb);
+                if (convertedCols.length > 0) {
+                    setNotification(`Optimized ${convertedCols.length} columns to support native boolean syntax.`);
+                    setTimeout(() => setNotification(null), 5000);
+                }
+
                 setDb(newDb);
                 
                 const newSchema = getDatabaseSchema(newDb);
@@ -501,6 +592,7 @@
                 setResult(null);
                 setQuery('');
                 setError(null);
+                setNotification(null);
                 if (fileInputRef.current) fileInputRef.current.value = '';
             };
 
@@ -626,9 +718,17 @@
             }
 
             return (
-                <div className="flex flex-col h-full gap-4">
+                <div className="flex flex-col h-full gap-4 relative">
+                  {/* Notification */}
+                  {notification && (
+                    <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50 bg-indigo-600 text-white px-6 py-2 rounded-full shadow-lg text-sm font-medium animate-in fade-in slide-in-from-top-4 duration-300 flex items-center gap-2">
+                      {Sparkles && <Sparkles className="w-4 h-4 text-yellow-300" />}
+                      {notification}
+                    </div>
+                  )}
+
                   {/* Header Bar */}
-                  <div className="flex items-center justify-between bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex-shrink-0">
+                  <div className="flex items-center justify-between bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex-shrink-0 gap-4">
                     <div className="flex items-center gap-3">
                       <div className={`p-2 rounded-lg ${db ? 'bg-[#e0f2fe]' : 'bg-slate-100'}`}>
                         {Database && <Database className={`w-5 h-5 ${db ? 'text-[#0369a1]' : 'text-slate-400'}`} />}
@@ -640,6 +740,9 @@
                         </p>
                       </div>
                     </div>
+                    
+                    {/* Clock Widget */}
+                    <Clock />
                     
                     <div className="flex items-center gap-2">
                       <input 
